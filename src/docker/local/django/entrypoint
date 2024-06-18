@@ -1,0 +1,44 @@
+#!/bin/bash
+
+set -o errexit  # Met le script en échec dès qu'une commande échoue
+set -o pipefail # Permet d'interrompre un pipeline si une des commandes échoue
+set -o nounset  # Produit une erreur si une variable non initialisée est utilisée
+
+if [ -z "${POSTGRES_USER}" ]; then  # Vérifie si la variable POSTGRES_USER est vide
+  base_postgres_image_default_user='postgres'  # Définit un utilisateur par défaut
+  export POSTGRES_USER="${base_postgres_image_default_user}"  # Assigne l'utilisateur par défaut à POSTGRES_USER
+fi
+
+# Construction de l'URL de la base de données PostgreSQL en utilisant les variables d'environnement
+export DATABASE_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
+
+# Utilisation de Python pour attendre que PostgreSQL soit disponible
+python << END
+import sys
+import time
+import psycopg2
+suggest_unrecoverable_after = 30
+start = time.time()
+while True:
+  try:
+    psycopg2.connect(
+        dbname="${POSTGRES_DB}",
+        user="${POSTGRES_USER}",
+        password="${POSTGRES_PASSWORD}",
+        host="${POSTGRES_HOST}",
+        port="${POSTGRES_PORT}",
+    )
+    break
+  except psycopg2.OperationalError as error:
+    sys.stderr.write("Waiting for PostgreSQL to become available...\n")
+    if time.time() - start > suggest_unrecoverable_after:
+        sys.stderr.write("This is taking longer than expected. The following exception may be indicative of an unrecoverable error: '{}'\n".format(error))
+        sys.exit(1)  # Sort du script avec un code d'erreur
+  time.sleep(1)
+END
+
+# Affiche un message pour indiquer que PostgreSQL est disponible
+>&2 echo "PostgreSQL is available"
+
+# Exécute les arguments passés au script
+exec "$@"

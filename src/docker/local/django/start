@@ -1,0 +1,9 @@
+#!/bin/bash
+
+set -o errexit  # Met le script en échec dès qu'une commande échoue
+set -o pipefail # Permet d'interrompre un pipeline si une des commandes échoue
+set -o nounset  # Produit une erreur si une variable non initialisée est utilisée
+
+python manage.py migrate --no-input
+python manage.py collectstatic --no-input
+exec python3 manage.py runserver 0.0.0.0:8000

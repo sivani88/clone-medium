@@ -1,0 +1,95 @@
+trigger:
+  - main
+
+pool:
+  name: "agent-authors" # Use your self-hosted agent pool
+
+variables:
+  CELERY_FLOWER_USER: "$(CELERY_FLOWER_USER)"
+  CELERY_FLOWER_PASSWORD: "$(CELERY_FLOWER_PASSWORD)"
+  SIGNING_KEY: "$(SIGNING_KEY)"
+  POSTGRES_USER: "$(POSTGRES_USER)"
+  POSTGRES_PASSWORD: "$(POSTGRES_PASSWORD)"
+
+jobs:
+  - job: BuildAndTest
+    displayName: "Build and Test Django Application"
+    pool:
+      name: "agent-authors" # Use your self-hosted agent pool
+
+    steps:
+      - script: |
+          # Créer et activer un environnement virtuel
+          python3.11 -m venv venv
+          source venv/bin/activate
+          pip install --upgrade pip
+          pip install docker-compose
+        displayName: "Set up Python and Docker Compose"
+
+      - script: |
+          # Mettre à jour le fichier .envs/.local/.django avec les variables secrètes
+          sed -i "s/^CELERY_FLOWER_USER=.*/CELERY_FLOWER_USER=${CELERY_FLOWER_USER}/" src/.envs/.local/.django
+          sed -i "s/^CELERY_FLOWER_PASSWORD=.*/CELERY_FLOWER_PASSWORD=${CELERY_FLOWER_PASSWORD}/" src/.envs/.local/.django
+          sed -i "s/^SIGNING_KEY=.*/SIGNING_KEY=${SIGNING_KEY}/" src/.envs/.local/.django
+          sed -i "s/^POSTGRES_USER=.*/POSTGRES_USER=${POSTGRES_USER}/" src/.envs/.local/.postgres
+          sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=${POSTGRES_PASSWORD}/" src/.envs/.local/.postgres
+
+          # Démarrer les services requis
+          docker-compose -f local.yml up -d postgres redis mailhog
+          sleep 10  # Donne le temps aux services de démarrer
+        displayName: "Start Required Services"
+
+      - script: |
+          # Lancer les migrations
+          docker-compose -f local.yml run --rm api python manage.py makemigrations
+          docker-compose -f local.yml run --rm api python manage.py migrate
+        displayName: "Run Migrations"
+
+      - script: |
+          # Créer un superutilisateur sans interaction
+          docker-compose -f local.yml run --rm api python src/create_superuser.py
+        displayName: "Create Superuser"
+        env:
+          DJANGO_SUPERUSER_PASSWORD: $(DJANGO_SUPERUSER_PASSWORD)
+
+      - script: |
+          # Lancer les tests
+          docker-compose -f local.yml run --rm api python manage.py test
+        displayName: "Run Tests"
+
+      - script: |
+          # Arrêter les services
+          docker-compose -f local.yml down
+        displayName: "Tear Down Services"
+
+  - job: DeployDev
+    displayName: "Deploy to Development Environment"
+    dependsOn: BuildAndTest
+    pool:
+      name: "agent-authors" # Use your self-hosted agent pool
+
+    steps:
+      - script: |
+          # Mettre à jour les fichiers .env avec les variables secrètes
+          sed -i "s/^CELERY_FLOWER_USER=.*/CELERY_FLOWER_USER=${CELERY_FLOWER_USER}/" src/.envs/.local/.django
+          sed -i "s/^CELERY_FLOWER_PASSWORD=.*/CELERY_FLOWER_PASSWORD=${CELERY_FLOWER_PASSWORD}/" src/.envs/.local/.django
+          sed -i "s/^SIGNING_KEY=.*/SIGNING_KEY=${SIGNING_KEY}/" src/.envs/.local/.django
+          sed -i "s/^POSTGRES_USER=.*/POSTGRES_USER=${POSTGRES_USER}/" src/.envs/.local/.postgres
+          sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=${POSTGRES_PASSWORD}/" src/.envs/.local/.postgres
+
+          # S'assurer que le fichier de configuration est présent
+          ls -l
+          cat local.yml
+
+          # Déployer les services
+          docker-compose -f local.yml up -d
+        displayName: "Deploy Services"
+
+      - script: |
+          # Vérifier l'état des conteneurs
+          docker-compose ps
+          if [ $(docker-compose ps --filter "status=exited" --filter "name=src-celery_worker-1" --filter "name=src-flower-1" --filter "name=src-api-1" --format "{{.Status}}" | grep -c "Exited") -ne 0 ]; then
+            echo "One or more containers are not running"
+            exit 1
+          fi
+        displayName: "Verify Deployment"
